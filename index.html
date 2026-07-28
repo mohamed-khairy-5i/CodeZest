@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ar" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Primary meta -->
+    <title>CodeZest - Online Code Editor Playground</title>
+    <meta
+      name="description"
+      content="CodeZest is a powerful online code editor with Monaco Editor, real-time preview, and code sharing. Supports JavaScript, TypeScript, React, and more."
+    />
+
+    <!-- Theme color for PWA splash screen (dark/light support) -->
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: light)"
+      content="#f8fafc"
+    />
+    <meta
+      name="theme-color"
+      media="(prefers-color-scheme: dark)"
+      content="#0f172a"
+    />
+
+    <!-- PWA / Apple -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="CodeZest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="CodeZest" />
+    <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+    <link rel="apple-touch-startup-image" href="/pwa-512x512.png" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/pwa-512x512.png" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="CodeZest - Online Code Editor Playground" />
+    <meta
+      property="og:description"
+      content="CodeZest is a powerful online code editor with Monaco Editor, real-time preview, and code sharing. Supports JavaScript, TypeScript, React, and more."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://codezest.app" />
+    <meta property="og:image" content="https://codezest.app/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="ar_EG" />
+    <meta property="og:site_name" content="CodeZest" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CodeZest - Online Code Editor Playground" />
+    <meta
+      name="twitter:description"
+      content="CodeZest is a powerful online code editor with Monaco Editor, real-time preview, and code sharing."
+    />
+    <meta name="twitter:image" content="https://codezest.app/og-image.png" />
+
+    <!-- Robots -->
+    <meta name="robots" content="index, follow" />
+  </head>
+  <body class="bg-slate-950 text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
