@@ -1,0 +1,15 @@
+# CodeZest - robots.txt
+# Allow all crawlers full access; this is a public free tool.
+
+User-agent: *
+Allow: /
+
+# The service worker and manifest are not useful search results.
+Disallow: /sw.js
+
+# Test harnesses are for developers, not searchers. Keeping them out of
+# the index avoids diluting the ranking signal for the actual editor.
+Disallow: /functional-test.html
+Disallow: /perf-test.html
+
+Sitemap: https://codezest.netlify.app/sitemap.xml

@@ -1,0 +1,174 @@
+#==============================================================================
+# Netlify configuration for CodeZest
+#
+# This is a fully static site, so everything here is free-tier friendly.
+# The headers below are what turn a plain static host into a fast,
+# secure, installable app.
+#==============================================================================
+
+[build]
+  # No build step: the site is hand-authored static files.
+  publish = "."
+
+#------------------------------------------------------------------------------
+# EMBEDDABLE EDITOR
+#
+# /embed serves the very same index.html (status 200 = rewrite, not redirect,
+# so the URL the author pasted stays intact and no extra round trip happens).
+# The page detects the path and renders in a stripped, chrome-less mode.
+#
+# Why a separate route at all, when one query parameter would do?
+# Because permission has to be attachable to something. Cross-origin framing is
+# granted BY PATH below, so /embed can be framed by anyone while the real
+# application cannot. A query parameter is invisible to header rules and could
+# not carry that distinction.
+#
+# Cost: zero. It is a rewrite of a file that is already cached at the edge, so
+# it consumes no build minutes, no functions and no extra credits.
+#------------------------------------------------------------------------------
+[[redirects]]
+  from = "/embed"
+  to = "/index.html"
+  status = 200
+
+#------------------------------------------------------------------------------
+# Security + performance headers (applied to every response)
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # NOTE: X-Frame-Options is deliberately NOT set here any more.
+    #
+    # It used to be, and it silently blocked the single strongest growth loop
+    # this project has: an editor embedded in a tutorial. One paste into one
+    # popular article keeps introducing new users for years, and our own header
+    # made that impossible.
+    #
+    # The fix was to NARROW the rule, not to delete it. Framing protection is
+    # re-applied below to "/" and "/index.html" — the routes that hold the
+    # user's files, their AI settings and their localStorage — while only
+    # "/embed" is opened up. Deleting the header globally would have been a
+    # hole; scoping it is a door.
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+    # Opt out of Google's FLoC/Topics tracking.
+    Permissions-Policy-Report-Only = "browsing-topics=()"
+
+#------------------------------------------------------------------------------
+# The HTML shell must always be revalidated so deploys go live instantly,
+# while the service worker still provides the offline copy.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+    # Framing protection for the real application. Both headers are sent on
+    # purpose: modern browsers honour the CSP directive and ignore XFO, older
+    # ones do the reverse, so together they cover everything.
+    X-Frame-Options = "SAMEORIGIN"
+    Content-Security-Policy = "frame-ancestors 'self'"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+    X-Frame-Options = "SAMEORIGIN"
+    Content-Security-Policy = "frame-ancestors 'self'"
+
+#------------------------------------------------------------------------------
+# The ONE route any site is allowed to frame.
+#
+# frame-ancestors is stated positively rather than by omitting X-Frame-Options,
+# because an explicit permissive rule is auditable: a future reader can see
+# that this route is public by decision, not public by oversight.
+#
+# The exposure is understood and bounded. An embedded instance is a different
+# browsing context with no access to the parent page, and the embed markup
+# grants only `clipboard-write`. Embed mode additionally hides the AI panel, so
+# nobody is ever invited to type an API key into a frame on a stranger's site.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/embed"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+    Content-Security-Policy = "frame-ancestors *"
+
+#------------------------------------------------------------------------------
+# A stale service worker would pin users to an old build, so never cache it.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+    Service-Worker-Allowed = "/"
+
+[[headers]]
+  for = "/manifest.json"
+  [headers.values]
+    Cache-Control = "public, max-age=3600"
+    Content-Type = "application/manifest+json"
+
+#------------------------------------------------------------------------------
+# Icons and images are effectively immutable - cache them hard.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/*.svg"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/sitemap.xml"
+  [headers.values]
+    Content-Type = "application/xml; charset=utf-8"
+    Cache-Control = "public, max-age=86400"
+
+[[headers]]
+  for = "/robots.txt"
+  [headers.values]
+    Content-Type = "text/plain; charset=utf-8"
+    Cache-Control = "public, max-age=86400"
+
+#------------------------------------------------------------------------------
+# The social preview card. Served to crawlers, not to visitors, so a long cache
+# is safe and keeps it off the bandwidth allowance on repeat scrapes.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/og-image.png"
+  [headers.values]
+    Content-Type = "image/png"
+    Cache-Control = "public, max-age=604800"
+
+#------------------------------------------------------------------------------
+# Icons and install screenshots.
+#
+# These are immutable in practice: when the brand mark changes the filename
+# changes with it. A long cache therefore costs nothing and keeps repeat
+# visitors, crawlers and app stores off the bandwidth allowance — which is the
+# one Netlify line item that can actually pause the site.
+#
+# `favicon.ico` is listed explicitly because clients request it by convention
+# even when the document points elsewhere, and an unmatched request would be
+# served with the default headers.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/*.png"
+  [headers.values]
+    Content-Type = "image/png"
+    Cache-Control = "public, max-age=604800"
+
+[[headers]]
+  for = "/favicon.ico"
+  [headers.values]
+    Content-Type = "image/x-icon"
+    Cache-Control = "public, max-age=604800"
+
+#------------------------------------------------------------------------------
+# llms.txt must be served as plain text, otherwise an agent fetching it gets a
+# download prompt instead of a document it can read.
+#------------------------------------------------------------------------------
+[[headers]]
+  for = "/llms.txt"
+  [headers.values]
+    Content-Type = "text/plain; charset=utf-8"
+    Cache-Control = "public, max-age=86400"

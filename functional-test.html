@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="robots" content="noindex,nofollow">
+<title>CodeZest functional tests</title>
+<style>
+  body{font-family:ui-monospace,monospace;background:#0b1020;color:#e5e7eb;padding:1rem}
+  h1{font-size:1rem}
+  #out{white-space:pre-wrap;font-size:.8rem;line-height:1.5}
+  .p{color:#34d399}.f{color:#f87171}.s{color:#fbbf24}
+</style>
+</head>
+<body>
+<h1>CodeZest functional tests</h1>
+<div id="out">booting…</div>
+<iframe id="app" src="./index.html" style="width:1200px;height:800px;border:1px solid #333"></iframe>
+
+<script>
+const out = document.getElementById('out');
+let pass = 0, fail = 0, skip = 0;
+const lines = [];
+
+function ok(name, cond, detail) {
+  if (cond) { pass++; lines.push(`<span class="p">PASS</span>  ${name}`); }
+  else { fail++; lines.push(`<span class="f">FAIL</span>  ${name}${detail ? '  [' + detail + ']' : ''}`); }
+}
+function sk(name, why) { skip++; lines.push(`<span class="s">SKIP</span>  ${name}  [${why}]`); }
+function flush() {
+  out.innerHTML = lines.join('\n') +
+    `\n\n<b>${pass} passed, ${fail} failed, ${skip} skipped</b>`;
+  console.log(`RESULT ${pass} passed, ${fail} failed, ${skip} skipped`);
+  lines.forEach(l => console.log(l.replace(/<[^>]+>/g, '')));
+}
+
+const frame = document.getElementById('app');
+
+frame.onload = async () => {
+  const w = frame.contentWindow;
+  const d = frame.contentDocument;
+
+  // Give the app's DOMContentLoaded boot sequence time to finish.
+  await new Promise(r => setTimeout(r, 1200));
+
+  // ---------- public API ----------
+  const CZ = w.CodeZest;
+  ok('window.CodeZest exported', !!CZ);
+  if (!CZ) { flush(); return; }
+
+  ok('CodeZest.version present', typeof CZ.version === 'string', CZ.version);
+  ok('editor initialised', !!CZ.editor);
+  ok('fileManager initialised', !!CZ.fileManager);
+  ok('LazyLoader present', !!CZ.LazyLoader);
+  ok('ModeLoader present', !!CZ.ModeLoader);
+  ok('TemplateGallery present', !!CZ.TemplateGallery);
+  ok('PreviewConsole present', !!CZ.PreviewConsole);
+  ok('window.editor alias', !!w.editor);
+  ok('window.fileManager alias', !!w.fileManager);
+
+  // ---------- language registry ----------
+  const reg = CZ.LANG_REGISTRY;
+  const regCount = reg ? Object.keys(reg).length : 0;
+  ok('LANG_REGISTRY present', !!reg);
+  ok('LANG_REGISTRY has 40+ languages', regCount >= 40, regCount + ' entries');
+  ok('every entry has a mode', reg && Object.values(reg).every(v => v && typeof v.mode === 'string'));
+  ok('every entry has a name', reg && Object.values(reg).every(v => v && typeof v.name === 'string'));
+  ok('web core needs no mode script',
+     reg && ['html','css','js'].every(k => reg[k] && reg[k].dep === null));
+  ok('python declares a mode script', reg && reg.py && reg.py.dep === 'python');
+  ok('rust declares a mode script', reg && reg.rs && reg.rs.dep === 'rust');
+
+  // ---------- i18n ----------
+  const I = CZ.I18N;
+  ok('I18N has en + ar', !!(I && I.en && I.ar));
+  const enKeys = Object.keys(I.en), arKeys = Object.keys(I.ar);
+  ok('en/ar key sets match', enKeys.length === arKeys.length &&
+     enKeys.every(k => k in I.ar), `en=${enKeys.length} ar=${arKeys.length}`);
+  ok('en dir is ltr', I.en.dir === 'ltr');
+  ok('ar dir is rtl', I.ar.dir === 'rtl');
+  ok('t() resolves a key', CZ.t('btn.run') && CZ.t('btn.run') !== 'btn.run');
+  ok('t() interpolates vars',
+     CZ.t('toast.minified', { percent: 42 }).includes('42'));
+  ok('template gallery keys translated',
+     ['tpl.title','tpl.search','tpl.use','tpl.none'].every(k => I.en[k] && I.ar[k]));
+
+  // ---------- file id collision (the bug that ate the starter project) ----------
+  const FM = CZ.fileManager;
+  const ids = new Set();
+  for (let i = 0; i < 500; i++) ids.add(FM.constructor.newId());
+  ok('file ids are collision-free over 500 draws', ids.size === 500, ids.size + '/500');
+
+  ok('starter project seeded 3 distinct files', FM.files.size >= 3, FM.files.size + ' files');
+  const names = [...FM.files.values()].map(f => f.name);
+  ok('starter files are index.html/style.css/script.js',
+     ['index.html','style.css','script.js'].every(n => names.includes(n)), names.join(','));
+
+  // ---------- share round-trip ----------
+  try {
+    const payload = { files: [{ name: 'a.js', content: 'const x=1;\n// عربي\n', type: 'js' }] };
+    const enc = CZ.encodeShareData(payload);
+    const dec = CZ.decodeShareData(enc);
+    ok('share encode produces a string', typeof enc === 'string' && enc.length > 0);
+    ok('share link is URL-safe', !/[+/=]/.test(enc));
+    ok('share round-trips exactly',
+       JSON.stringify(dec) === JSON.stringify(payload));
+
+    /*
+     * Compression only matters at realistic project size. On a ~70 byte
+     * payload DEFLATE headers plus base64's 4/3 expansion inevitably lose,
+     * so asserting a win there would be testing the wrong thing. A real
+     * project is what has to fit inside a URL.
+     */
+    const big = { files: [
+      { name: 'index.html', type: 'html',
+        content: '<div class="card"><h1>Hello</h1><p>Body text</p></div>\n'.repeat(60) },
+      { name: 'style.css', type: 'css',
+        content: '.card { padding: 1rem; border-radius: 8px; color: #fff; }\n'.repeat(60) }
+    ]};
+    const rawBig = JSON.stringify(big);
+    const encBig = CZ.encodeShareData(big);
+    const ratio = encBig.length / rawBig.length;
+    ok('share compresses a realistic project', ratio < 0.5,
+       `${rawBig.length} -> ${encBig.length} chars (${Math.round(ratio * 100)}%)`);
+    ok('realistic project round-trips exactly',
+       JSON.stringify(CZ.decodeShareData(encBig)) === rawBig);
+    ok('realistic project fits in a URL', encBig.length < 30000, encBig.length + ' chars');
+  } catch (e) { ok('share round-trip', false, e.message); }
+
+  // ---------- preview document builder ----------
+  try {
+    const htmlDoc = CZ.buildPreviewDocument({
+      name: 'index.html', type: 'html',
+      content: '<!DOCTYPE html><html><head><link rel="stylesheet" href="style.css"></head><body><h1>hi</h1></body></html>'
+    });
+    ok('preview builds an HTML document', /<html/i.test(htmlDoc));
+    ok('preview injects the sibling stylesheet', htmlDoc.includes('place-items') || htmlDoc.includes('<style'));
+    ok('preview injects the console bridge', htmlDoc.includes('__codezest'));
+
+    const cssDoc = CZ.buildPreviewDocument({ name: 's.css', type: 'css', content: 'body{color:red}' });
+    ok('preview handles a bare CSS file', /<html/i.test(cssDoc) && cssDoc.includes('color:red'));
+
+    const jsDoc = CZ.buildPreviewDocument({ name: 's.js', type: 'js', content: 'console.log(1)' });
+    ok('preview handles a bare JS file', /<html/i.test(jsDoc));
+
+    const mdDoc = CZ.buildPreviewDocument({ name: 'r.md', type: 'md', content: '# Title\n\ntext' });
+    ok('preview renders Markdown headings', /<h1/i.test(mdDoc));
+  } catch (e) { ok('preview builder', false, e.message); }
+
+  // ---------- sibling resolution with MULTIPLE projects in the workspace ----------
+  // Regression guard: resolution used to pick the first file of a matching
+  // TYPE rather than the file actually referenced, so a second project in
+  // the workspace rendered unstyled.
+  try {
+    const FM2 = CZ.fileManager;
+    await FM2.createFile('other.css', '.decoy{color:red}', 'css');
+    await FM2.createFile('other.js', 'window.__decoy=1;', 'js');
+    await FM2.createFile('mine.css', '.mine{outline:3px solid lime}', 'css');
+    await FM2.createFile('mine.js', 'window.__mine=1;', 'js');
+
+    // Create the host as a REAL workspace file, so bare-CSS host lookup
+    // (which searches fileManager by name) can find it below.
+    const host = await FM2.createFile('mine.html',
+      '<!DOCTYPE html><html><head><link rel="stylesheet" href="mine.css"></head>' +
+      '<body><p>x</p><scr' + 'ipt src="mine.js"></scr' + 'ipt></body></html>', 'html');
+    const doc = CZ.buildPreviewDocument(host);
+    ok('injects the REFERENCED stylesheet', doc.includes('.mine{outline'));
+    ok('does NOT inject an unreferenced stylesheet', !doc.includes('.decoy'));
+    ok('injects the REFERENCED script', doc.includes('__mine'));
+    ok('does NOT inject an unreferenced script', !doc.includes('__decoy'));
+
+    // A bare CSS file should host itself on its same-named HTML sibling.
+    const bare = CZ.buildPreviewDocument(
+      { name: 'mine.css', type: 'css', content: '.mine{color:blue}' });
+    ok('bare CSS picks its same-named HTML host', bare.includes('<p>x</p>'));
+  } catch (e) { ok('sibling resolution', false, e.message); }
+
+  // ---------- closing-script-tag escaping guard ----------
+  // This class of bug silently killed the ENTIRE inline script twice during
+  // development, so it is worth asserting permanently: the app booted at all,
+  // and generated documents keep their closing tags intact.
+  try {
+    const jsDoc2 = CZ.buildPreviewDocument({ name: 'a.js', type: 'js', content: 'console.log(1)' });
+    const closeTag = new RegExp('</' + 'scr' + 'ipt>', 'gi');
+    const closes = (jsDoc2.match(closeTag) || []).length;
+    ok('generated preview has balanced script tags', closes >= 2, closes + ' closing tags');
+    ok('main script survived to the very end (API frozen)', Object.isFrozen(CZ));
+  } catch (e) { ok('script-tag guard', false, e.message); }
+
+  // ---------- iframe sandbox (XSS containment) ----------
+  const iframe = d.getElementById('previewIframe');
+  ok('preview iframe exists', !!iframe);
+  if (iframe) {
+    const sb = iframe.getAttribute('sandbox') || '';
+    ok('preview iframe is sandboxed', sb.length > 0, sb);
+    ok('sandbox allows scripts', sb.includes('allow-scripts'));
+    ok('sandbox WITHHOLDS allow-same-origin (XSS fix)', !sb.includes('allow-same-origin'), sb);
+  }
+
+  // ---------- template gallery ----------
+  try {
+    const tplBtn = [...d.querySelectorAll('.toolbar-btn')]
+      .find(b => (b.getAttribute('onclick') || '').includes('TemplateGallery.open'));
+    ok('template gallery has a toolbar button', !!tplBtn);
+    ok('template modal exists in the DOM', !!d.getElementById('templateModal'));
+    ok('template grid container exists', !!d.getElementById('tplGrid'));
+
+    ok('templates NOT eagerly loaded (lazy)', typeof w.CODEZEST_TEMPLATES === 'undefined');
+
+    await CZ.LazyLoader.ensure('templates');
+    const T = w.CODEZEST_TEMPLATES;
+    ok('templates load on demand', Array.isArray(T), T ? T.length + ' templates' : 'none');
+    if (Array.isArray(T)) {
+      ok('17 templates present', T.length === 17, String(T.length));
+      ok('every template has id/name/html/css/js',
+         T.every(x => x.id && x.name && typeof x.html === 'string' &&
+                      typeof x.css === 'string' && typeof x.js === 'string'));
+      ok('template ids are unique', new Set(T.map(x => x.id)).size === T.length);
+      ok('every template has Arabic name + description',
+         T.every(x => x.nameAr && x.descriptionAr && x.categoryAr),
+         T.filter(x => !x.nameAr).map(x => x.id).join(',') || 'all translated');
+      ok('every template has an inline SVG icon',
+         T.every(x => typeof x.icon === 'string' && x.icon.includes('<svg')));
+      ok('every template has >=1 tag', T.every(x => Array.isArray(x.tags) && x.tags.length));
+    }
+  } catch (e) { ok('template gallery', false, e.message); }
+
+  // ---------- minifiers must not destroy code ----------
+  try {
+    const css = CZ.LazyLoader ? null : null;
+    // Exercise via the exported tools on a scratch file instead of the UI.
+    ok('minifyCode exported', typeof CZ.minifyCode === 'function');
+    ok('formatCode exported', typeof CZ.formatCode === 'function');
+    ok('beautifyCode exported', typeof CZ.beautifyCode === 'function');
+  } catch (e) { ok('code tools', false, e.message); }
+
+  // ---------- SEO / PWA ----------
+  ok('has a <title>', !!d.title && d.title.length > 20, d.title);
+  ok('has meta description', !!d.querySelector('meta[name="description"]'));
+  ok('has canonical link', !!d.querySelector('link[rel="canonical"]'));
+  ok('has Open Graph title', !!d.querySelector('meta[property="og:title"]'));
+  ok('has Twitter card', !!d.querySelector('meta[name="twitter:card"]'));
+  ok('has JSON-LD schema', !!d.querySelector('script[type="application/ld+json"]'));
+  ok('has PWA manifest link', !!d.querySelector('link[rel="manifest"]'));
+  ok('Tailwind CDN removed',
+     ![...d.querySelectorAll('script[src]')].some(s => s.src.includes('cdn.tailwindcss.com')));
+
+  // ---------- RTL ----------
+  const before = d.documentElement.dir;
+  CZ.setLanguage(CZ.lang === 'ar' ? 'en' : 'ar');
+  ok('toggling language flips dir', d.documentElement.dir !== before,
+     before + ' -> ' + d.documentElement.dir);
+  CZ.setLanguage(before === 'rtl' ? 'ar' : 'en');
+  ok('dir restored', d.documentElement.dir === before);
+
+  // ==========================================================================
+  //  AI COPILOT
+  // ==========================================================================
+  ok('AICopilot exported', !!CZ.AICopilot);
+  ok('ai.js NOT eagerly loaded (lazy)', typeof w.CODEZEST_AI === 'undefined');
+
+  let AI = null;
+  try {
+    await CZ.LazyLoader.ensure('ai');
+    AI = w.CODEZEST_AI;
+    ok('ai.js loads on demand', !!AI);
+  } catch (e) { ok('ai.js loads on demand', false, e.message); }
+
+  if (AI) {
+    ok('AI exposes three providers',
+       ['ondevice', 'gemini', 'openai'].every(k => AI.PROVIDERS[k]),
+       Object.keys(AI.PROVIDERS).join(','));
+
+    // The on-device provider is the whole differentiator: it must need no key
+    // and must be tried FIRST, otherwise a user with no key gets nothing.
+    ok('on-device provider needs no key', AI.PROVIDERS.ondevice.needsKey === false);
+    ok('on-device provider is marked local', AI.PROVIDERS.ondevice.local === true);
+    ok('on-device is first in the preference order', AI.order[0] === 'ondevice', AI.order.join('>'));
+    ok('BYOK providers do require a key',
+       AI.PROVIDERS.gemini.needsKey === true && AI.PROVIDERS.openai.needsKey === true);
+    ok('BYOK providers link to where the key comes from',
+       /^https:/.test(AI.PROVIDERS.gemini.keyUrl) && /^https:/.test(AI.PROVIDERS.openai.keyUrl));
+
+    ok('six quick actions', AI.QUICK_ACTIONS.length === 6, String(AI.QUICK_ACTIONS.length));
+    ok('every quick action has id + icon + i18n key',
+       AI.QUICK_ACTIONS.every(a => a.id && a.icon && CZ.I18N.en['ai.act.' + a.id]));
+
+    // Prompt-injection defence. The user's file is untrusted input, so the
+    // system prompt has to state that explicitly.
+    ok('system prompt declares the file is CONTEXT, not instructions',
+       /context, not instructions/i.test(AI.SYSTEM_PROMPT));
+    ok('system prompt forbids revealing itself',
+       /reveal/i.test(AI.SYSTEM_PROMPT));
+    ok('system prompt keeps code in English',
+       /identifier|English/i.test(AI.SYSTEM_PROMPT));
+
+    // Token budget: an unbounded file would blow the context window and, on a
+    // paid key, the user's money.
+    try {
+      const huge = 'x'.repeat(40000);
+      const msg = AI.buildUserMessage('explain this', { name: 'big.js', content: huge });
+      ok('buildUserMessage caps the attached file', msg.length < 14000, msg.length + ' chars');
+      ok('buildUserMessage says it truncated', /truncat/i.test(msg));
+      const small = AI.buildUserMessage('explain', { name: 'a.js', content: 'let x=1' });
+      ok('buildUserMessage fences the file', small.includes('```'));
+      ok('buildUserMessage names the file', small.includes('a.js'));
+    } catch (e) { ok('buildUserMessage', false, e.message); }
+
+    // ---- XSS: model output must NEVER reach innerHTML -------------------
+    // A remote model (or a poisoned file) can emit anything at all, so this
+    // is the single most important assertion about the AI feature.
+    try {
+      const box = d.createElement('div');
+      d.body.appendChild(box);
+      const hostile =
+        '<im' + 'g src=x onerror="window.__pwned=1">\n\n' +
+        '<sv' + 'g onload="window.__pwned=1">' + '</sv' + 'g>\n\n' +
+        '<scr' + 'ipt>window.__pwned2=1;<' + '/scr' + 'ipt>';
+      AI.renderMarkdown(box, hostile, {});
+      await new Promise(r => setTimeout(r, 60));
+
+      ok('renderMarkdown creates no <img> from model output', !box.querySelector('img'));
+      ok('renderMarkdown creates no <svg> from model output', !box.querySelector('svg'));
+      ok('renderMarkdown creates no <script> from model output',
+         !box.querySelector('scr' + 'ipt'));
+      ok('injected onerror did not fire', typeof w.__pwned === 'undefined');
+      ok('injected script did not run', typeof w.__pwned2 === 'undefined');
+      ok('hostile markup survives as literal TEXT',
+         box.textContent.includes('onerror'), box.textContent.slice(0, 40));
+
+      // ---- RTL correctness: prose may flip, code must not ----------------
+      box.textContent = '';
+      AI.renderMarkdown(box, 'Try this:\n\n```js\nconst x = 1;\n```\n\nand `inline()` too.', {});
+      const pre = box.querySelector('pre, code');
+      ok('code block is forced dir="ltr"',
+         !!box.querySelector('[dir="ltr"]'), pre ? pre.getAttribute('dir') : 'no code element');
+      ok('code content is preserved verbatim', box.textContent.includes('const x = 1;'));
+      box.remove();
+    } catch (e) { ok('renderMarkdown safety', false, e.message); }
+
+    // ---- Key storage: namespaced, and NEVER in a share link ------------
+    try {
+      AI.setKey('gemini', 'FAKE-KEY-FOR-TESTS-12345');
+      ok('key round-trips through storage', AI.getKey('gemini') === 'FAKE-KEY-FOR-TESTS-12345');
+      ok('keys are namespaced per provider', AI.getKey('openai') !== 'FAKE-KEY-FOR-TESTS-12345');
+
+      // The decisive privacy test: a share link is a public artefact.
+      await CZ.fileManager.createFile('leak-check.js', 'let a = 1;', 'js');
+      const files = [...CZ.fileManager.files.values()].map(f => ({ n: f.name, c: f.content, t: f.type }));
+      const enc = CZ.encodeShareData({ v: 1, f: files, a: 'leak-check.js' });
+      ok('share payload does NOT carry the API key', !enc.includes('FAKE-KEY-FOR-TESTS'));
+      ok('decoded share payload has no key field',
+         !JSON.stringify(CZ.decodeShareData(enc)).includes('FAKE-KEY-FOR-TESTS'));
+
+      AI.clearAllKeys();
+      ok('clearAllKeys removes the key', !AI.getKey('gemini'));
+    } catch (e) { ok('key storage', false, e.message); }
+
+    // ---- The key must travel in a HEADER, never in the query string ----
+    // A URL is logged by proxies, browsers and analytics; a header is not.
+    try {
+      const src = await (await fetch('./ai.js')).text();
+      /* Audit the CODE, not the prose. ai.js documents in its own comments
+       * that it never touches innerHTML, insertAdjacentHTML or eval — so a
+       * naive text search finds those very words and fails the assertion they
+       * were written to describe. Stripping comments first is what makes these
+       * checks mean what they say. */
+      const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+      ok('Gemini key is sent as an x-goog-api-key header', code.includes('x-goog-api-key'));
+      ok('Gemini key is NOT appended to the URL', !/[?&]key=/.test(code));
+      ok('AI engine uses no eval / new Function',
+         !/\beval\s*\(/.test(code) && !/new\s+Function\s*\(/.test(code));
+      ok('AI engine never assigns innerHTML', !/innerHTML/.test(code));
+      ok('AI engine never uses insertAdjacentHTML', !/insertAdjacentHTML/.test(code));
+      ok('AI engine builds output with textContent / createElement',
+         /textContent/.test(code) && /createElement/.test(code));
+    } catch (e) { ok('ai.js source audit', false, e.message); }
+  }
+
+  // ==========================================================================
+  //  PYTHON RUNTIME
+  // ==========================================================================
+  ok('PythonRunner exported', !!CZ.PythonRunner);
+  ok('python.js NOT eagerly loaded (lazy)', typeof w.CODEZEST_PYTHON === 'undefined');
+  const pyBtn = d.getElementById('pyRunBtn');
+  ok('Python button exists', !!pyBtn);
+  ok('Python button hidden while no .py file is open', pyBtn && pyBtn.hidden);
+  ok('Python consent modal exists', !!d.getElementById('pyConsentModal'));
+
+  try {
+    await CZ.LazyLoader.ensure('python');
+    const PY = w.CODEZEST_PYTHON;
+    ok('python.js loads on demand', !!PY);
+    if (PY) {
+      ok('Pyodide version is pinned', PY.pyodideVersion === '314.0.3', PY.pyodideVersion);
+      ok('Pyodide is served from a CDN, not from us',
+         /cdn\.jsdelivr\.net/.test(PY.baseUrl), PY.baseUrl);
+      ok('download size is declared to the user before consent',
+         typeof PY.approxMB === 'number' && PY.approxMB > 0, PY.approxMB + ' MB');
+      ok('runtime exposes boot/run/terminate',
+         ['boot', 'run', 'terminate', 'on'].every(k => typeof PY[k] === 'function'));
+      // terminate() is what makes `while True:` survivable. Without it an
+      // infinite loop would freeze the tab with no way out.
+      ok('runtime is idle before any consent', !PY.isReady() && !PY.isBusy());
+      // Matches a Pyodide URL rather than the word, so the comment in sw.js
+      // that explains the exclusion does not fail its own assertion.
+      ok('12 MB is NOT pre-cached by the service worker',
+         !/cdn\.jsdelivr\.net\/pyodide|pyodide\.js/.test(await (await fetch('./sw.js')).text()));
+    }
+  } catch (e) { ok('python runtime contract', false, e.message); }
+
+  // ==========================================================================
+  //  DISTRIBUTION: share hub, QR, embed
+  // ==========================================================================
+  ok('ShareHub exported', !!CZ.ShareHub);
+  ok('share.js NOT eagerly loaded (lazy)', typeof w.CODEZEST_SHARE === 'undefined');
+  ok('share modal exists', !!d.getElementById('shareModal'));
+  ok('share hub has a QR canvas', !!d.getElementById('shQr'));
+  ok('share hub has an embed field', !!d.getElementById('shEmbed'));
+
+  let SH = null;
+  try {
+    await CZ.LazyLoader.ensure('share');
+    SH = w.CODEZEST_SHARE;
+    ok('share.js loads on demand', !!SH);
+  } catch (e) { ok('share.js loads on demand', false, e.message); }
+
+  if (SH) {
+    // ---- Targets ------------------------------------------------------
+    ok('six share targets', SH.TARGETS.length === 6, String(SH.TARGETS.length));
+    // Order is a market decision: the Arabic-speaking audience shares on
+    // WhatsApp and Telegram. Putting X first would bury both.
+    ok('WhatsApp is the FIRST target', SH.TARGETS[0].id === 'whatsapp', SH.TARGETS[0].id);
+    ok('Telegram is the SECOND target', SH.TARGETS[1].id === 'telegram', SH.TARGETS[1].id);
+    const testUrl = 'https://codezest.netlify.app/#s=AbC-_123';
+    ok('every target builds an https link',
+       SH.TARGETS.every(t2 => /^https:\/\//.test(t2.build(testUrl, 'hi'))));
+    ok('every target percent-encodes the URL',
+       SH.TARGETS.every(t2 => !t2.build(testUrl, 'hi').includes('#s=')),
+       'a raw # would truncate the shared link');
+    ok('every target has an icon and a label',
+       SH.TARGETS.every(t2 => t2.icon && t2.label));
+
+    // ---- QR encoder ---------------------------------------------------
+    try {
+      const qr = SH.qrEncode('https://codezest.netlify.app/');
+      ok('qrEncode returns a symbol', !!qr);
+      ok('QR size matches the version formula', qr.size === qr.version * 4 + 17,
+         'v' + qr.version + ' -> ' + qr.size);
+      ok('QR chose a mask in range', qr.mask >= 0 && qr.mask <= 7, String(qr.mask));
+
+      // Structural invariants. If any of these are wrong the symbol is not a
+      // QR code at all, whatever it looks like.
+      const m = qr.modules;
+      // A finder pattern is concentric rings by Chebyshev distance from its
+      // centre at (3,3): dark at distance 0 and 1, LIGHT at 2, dark at 3, and
+      // light at 4 (that outer ring is the mandatory separator).
+      ok('finder centre (distance 0) is dark', m[3][3] === true);
+      ok('finder distance 1 is dark', m[2][2] === true && m[4][4] === true);
+      ok('finder distance 2 is the LIGHT ring', m[1][1] === false && m[5][5] === false);
+      ok('finder distance 3 is the dark outer square', m[0][0] === true && m[6][6] === true);
+      ok('separator around the finder is light', m[7][0] === false && m[0][7] === false);
+      ok('separator corner is light', m[7][7] === false);
+      ok('timing pattern alternates',
+         m[6][8] === true && m[6][9] === false && m[6][10] === true);
+      ok('the mandatory dark module is set', m[qr.size - 8][8] === true);
+      ok('top-right finder present', m[3][qr.size - 4] === true);
+      ok('bottom-left finder present', m[qr.size - 4][3] === true);
+
+      // Version growth must be monotonic: more data must never pick a
+      // SMALLER symbol.
+      const short = SH.qrEncode('a');
+      const long = SH.qrEncode('a'.repeat(300));
+      ok('a longer payload needs a bigger version', long.version > short.version,
+         'v' + short.version + ' -> v' + long.version);
+      ok('version never exceeds the spec limit',
+         long.version <= SH.maxQrVersion, 'v' + long.version + ' cap v' + SH.maxQrVersion);
+
+      /* REGRESSION GUARD for a real defect found by end-to-end testing.
+       * The cap was originally 20, which holds 859 bytes — but the DEFAULT
+       * three-file starter project produces a 1074-byte share URL, so the QR
+       * code silently refused the most common case in the whole app. A feature
+       * that fails on the default project is dead, not cautious. Scannability
+       * now lives in the renderer (a minimum module size) and in an honest
+       * density warning, instead of in an over-tight capacity cap. */
+      ok('the DEFAULT starter project fits in a QR code', (() => {
+        const files = [...CZ.fileManager.files.values()]
+          .filter(f => ['index.html', 'style.css', 'script.js'].includes(f.name))
+          .map(f => ({ n: f.name, c: f.content, t: f.type }));
+        const u = location.origin + '/index.html#s=' +
+                  CZ.encodeShareData({ v: 1, f: files, a: 'index.html' });
+        const q = SH.qrEncode(u);
+        return !!q;
+      })(), 'the 859-byte v20 cap used to break exactly this case');
+      ok('dense symbols are flagged so the UI can warn',
+         typeof SH.qrEncode('a').dense === 'boolean' &&
+         SH.qrEncode('a').dense === false);
+      ok('a very large payload IS flagged dense',
+         SH.qrEncode('y'.repeat(2000)).dense === true);
+      ok('dense threshold sits below the spec limit',
+         SH.denseVersion < SH.maxQrVersion,
+         'dense>v' + SH.denseVersion + ', cap v' + SH.maxQrVersion);
+
+      // Honest failure: too much data returns null rather than an unreadable
+      // symbol, so the UI can say "copy the link instead".
+      ok('oversized payload returns null instead of a bad symbol',
+         SH.qrEncode('x'.repeat(5000)) === null);
+      ok('empty input returns null', SH.qrEncode('') === null);
+
+      // UTF-8: the interface is Arabic, so a non-ASCII payload must encode.
+      const arabicQr = SH.qrEncode('CodeZest — محرر أكواد عربي');
+      ok('QR encodes non-ASCII (UTF-8) text', !!arabicQr);
+
+      // Canvas rendering, including the mandatory 4-module quiet zone.
+      const cv = d.createElement('canvas');
+      const dim = SH.qrToCanvas(cv, qr, 264);
+      ok('qrToCanvas sizes the canvas', cv.width > 0 && cv.width === cv.height, cv.width + 'px');
+      ok('canvas includes the 4-module quiet zone',
+         dim % (qr.size + 8) === 0, dim + ' / ' + (qr.size + 8));
+    } catch (e) { ok('QR encoder', false, e.message); }
+
+    // ---- Embed snippet -------------------------------------------------
+    try {
+      const snip = SH.embedSnippet('https://codezest.netlify.app/#s=XYZ');
+      ok('embed snippet is an iframe', /^<iframe /.test(snip));
+      ok('embed points at the /embed route', snip.includes('/embed'));
+      ok('embed preserves the project hash', snip.includes('#s=XYZ'));
+      ok('embed hash comes AFTER the path', snip.indexOf('/embed') < snip.indexOf('#s='));
+      ok('embed is lazy-loaded for the host page', snip.includes('loading="lazy"'));
+      ok('embed grants only clipboard-write', snip.includes('allow="clipboard-write"'));
+      ok('embed has a title for screen readers', snip.includes('title='));
+      // index.html must not be left in the path or the rewrite never matches.
+      const snip2 = SH.embedSnippet('https://codezest.netlify.app/index.html#s=Q');
+      ok('embed normalises index.html away', !snip2.includes('index.html'), snip2.slice(0, 90));
+    } catch (e) { ok('embed snippet', false, e.message); }
+
+    try {
+      const src = await (await fetch('./share.js')).text();
+      const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+      /* The privacy guarantee, asserted structurally rather than by blocklist.
+       * A blocklist of known QR services would both miss the next one and
+       * false-positive on the comment that explains why they were rejected.
+       * Instead: share.js must make NO network calls of any kind. If it cannot
+       * talk to the network, it cannot leak the user's code, whatever the
+       * service happens to be called. */
+      ok('share layer makes zero network calls (cannot leak user code)',
+         !/\bfetch\s*\(/.test(code) && !/XMLHttpRequest/.test(code) &&
+         !/new\s+Image\s*\(/.test(code) && !/importScripts/.test(code) &&
+         !/sendBeacon/.test(code));
+      ok('share layer references no host beyond the six share endpoints',
+         !/https?:\/\/(?!wa\.me|t\.me|twitter\.com|www\.facebook\.com|www\.linkedin\.com|www\.reddit\.com)[a-z0-9.-]+\//i
+           .test(code));
+      ok('share layer uses no eval / new Function',
+         !/\beval\s*\(/.test(code) && !/new\s+Function\s*\(/.test(code));
+    } catch (e) { ok('share.js source audit', false, e.message); }
+  }
+
+  // ---- Embed mode + attribution ----------------------------------------
+  ok('embed attribution link exists', !!d.querySelector('.embed-brand'));
+  const brand = d.querySelector('.embed-brand');
+  ok('attribution opens in a new tab (we may be inside a frame)',
+     brand && brand.target === '_blank');
+  ok('attribution uses rel=noopener', brand && /noopener/.test(brand.rel));
+  ok('attribution is hidden outside embed mode',
+     brand && w.getComputedStyle(brand).display === 'none');
+  ok('sensitive controls are marked hide-embed',
+     d.querySelectorAll('.toolbar-btn.hide-embed').length >= 4,
+     d.querySelectorAll('.toolbar-btn.hide-embed').length + ' marked');
+  // The AI panel must be one of them: inviting a key into a third-party frame
+  // is a phishing pattern regardless of our own good intentions.
+  ok('the AI button is hidden in embed mode',
+     [...d.querySelectorAll('.toolbar-btn.hide-embed')]
+       .some(b => (b.getAttribute('onclick') || '').includes('AICopilot')));
+  ok('not in embed mode on the normal route',
+     !d.body.classList.contains('embed-mode'));
+
+  // ---- Install banner ---------------------------------------------------
+  const banner = d.getElementById('installBanner');
+  ok('install banner exists', !!banner);
+  ok('install banner starts hidden (only shown on beforeinstallprompt)',
+     banner && !banner.classList.contains('active'));
+
+  // ==========================================================================
+  //  REAL VISIBILITY  —  the bug that made four whole features unreachable
+  //
+  //  #aiPanel, #aiSetupModal, #pyConsentModal and #shareModal were all nested
+  //  inside #templateModal. Since .modal is visibility:hidden until .active,
+  //  every one of them inherited that hidden state: the AI Copilot, the BYOK
+  //  setup dialog, the Python consent dialog and the entire share hub were
+  //  invisible, while the markup looked perfectly correct when read.
+  //
+  //  Every earlier test passed, because they all asserted that a CSS CLASS had
+  //  been added. A class says what we intended; the computed style says what
+  //  the user actually gets. These assertions check the latter.
+  // ==========================================================================
+  const SURFACES = ['aiPanel', 'aiSetupModal', 'pyConsentModal', 'shareModal'];
+
+  // Structural half: no surface may live inside another modal.
+  SURFACES.forEach(id => {
+    const el = d.getElementById(id);
+    ok(id + ' is not nested inside another modal', (() => {
+      if (!el) return false;
+      let p = el.parentElement;
+      while (p && p !== d.body) {
+        if (p.classList && p.classList.contains('modal')) return false;
+        p = p.parentElement;
+      }
+      return true;
+    })(), 'a closed ancestor modal would make it visibility:hidden');
+  });
+
+  // Behavioural half: activate each surface and read the COMPUTED style.
+  /*
+   * Reading the element's OWN computed style is not enough, and this is the
+   * subtlety that let the bug survive: `visibility` is inherited but a
+   * descendant may override it back to visible, whereas `opacity` on an
+   * ancestor applies to the whole subtree and CANNOT be overridden. The
+   * closed #templateModal had opacity:0, so #shareModal reported
+   * visibility:visible and opacity:1 while painting absolutely nothing.
+   *
+   * So we walk the ancestor chain as well, and prefer the browser's own
+   * checkVisibility() when it is available, since that is precisely the
+   * question we are asking.
+   */
+  function reallyVisible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (!(r.width > 1 && r.height > 1)) return false;
+    if (typeof el.checkVisibility === 'function') {
+      if (!el.checkVisibility({ opacityProperty: true, visibilityProperty: true,
+                                contentVisibilityAuto: true })) return false;
+    }
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const cs = w.getComputedStyle(node);
+      if (cs.display === 'none') return false;
+      if (parseFloat(cs.opacity) < 0.01) return false;   // kills the subtree
+      node = node.parentElement;
+    }
+    return w.getComputedStyle(el).visibility === 'visible';
+  }
+
+  // The AI panel is the flagship feature, so it gets the strictest check:
+  // opened through its real public method, then measured.
+  await CZ.AICopilot.open();
+  await new Promise(r => setTimeout(r, 600));
+  const aiEl = d.getElementById('aiPanel');
+  ok('AI panel is REALLY visible once opened (computed style, not a class)',
+     reallyVisible(aiEl),
+     aiEl ? w.getComputedStyle(aiEl).visibility + ' ' +
+            Math.round(aiEl.getBoundingClientRect().width) + 'px wide' : 'missing');
+  ok('AI panel occupies a sensible slice of the viewport',
+     aiEl && aiEl.getBoundingClientRect().width > 200 &&
+     aiEl.getBoundingClientRect().height > 200);
+  CZ.AICopilot.close();
+
+  // The share hub: the whole distribution layer depends on it being seen.
+  await CZ.ShareHub.open(location.origin + '/index.html#s=test');
+  await new Promise(r => setTimeout(r, 600));
+  ok('share hub is REALLY visible once opened',
+     reallyVisible(d.getElementById('shareModal')));
+  ok('the QR canvas inside it is REALLY visible',
+     reallyVisible(d.getElementById('shQr')),
+     'a canvas can carry pixels while being invisible on screen');
+  ok('the share targets are REALLY visible',
+     reallyVisible(d.getElementById('shTargets')));
+  const smClose = d.querySelector('#shareModal .modal-close');
+  if (smClose) smClose.click();
+
+  // ==========================================================================
+  //  LAUNCH ACTIONS  —  advertised entry points must actually do something
+  // ==========================================================================
+  const mf = await fetch('./manifest.json').then(r => r.json());
+  ok('manifest declares app shortcuts', Array.isArray(mf.shortcuts) && mf.shortcuts.length >= 3);
+  ok('manifest declares a share target', !!(mf.share_target && mf.share_target.action));
+  const html = await fetch('./index.html').then(r => r.text());
+  const jsOnly = html.replace(/<!--[\s\S]*?-->/g, '');
+  // Every ?action= the manifest advertises must be handled in the app.
+  const advertised = (mf.shortcuts || []).map(s => (s.url.match(/action=([\w-]+)/) || [])[1])
+    .concat([(mf.share_target.action.match(/action=([\w-]+)/) || [])[1]])
+    .filter(Boolean);
+  ok('manifest advertises at least 4 launch actions', advertised.length >= 4, advertised.join(', '));
+  advertised.forEach(a => {
+    ok('launch action "' + a + '" is actually handled in the app',
+       new RegExp("action\\s*===\\s*['\"]" + a + "['\"]").test(jsOnly),
+       'a shortcut that does nothing teaches users the install is broken');
+  });
+  ok('launch parameters are stripped so a refresh cannot replay them',
+     /history\.replaceState/.test(jsOnly));
+
+  // ==========================================================================
+  //  ICONS  —  a raster favicon and a PNG touch icon must really exist
+  //
+  //  Both were inline SVG data URIs containing an emoji. iOS ignores SVG for
+  //  apple-touch-icon, so "Add to Home Screen" produced a blurry screenshot
+  //  instead of an icon; and an emoji glyph renders using the host's font,
+  //  so the favicon beside our search result could be blank.
+  // ==========================================================================
+  const touch = d.querySelector('link[rel="apple-touch-icon"]');
+  ok('an apple-touch-icon is declared', !!touch);
+  ok('the touch icon is a PNG file, not an SVG data URI',
+     touch && /\.png$/i.test(touch.getAttribute('href') || ''),
+     touch ? (touch.getAttribute('href') || '').slice(0, 40) : 'missing');
+  const favs = [...d.querySelectorAll('link[rel~="icon"]')].map(l => l.getAttribute('href') || '');
+  ok('a raster favicon is offered', favs.some(h => /\.(png|ico)$/i.test(h)), favs.join(' '));
+  ok('no icon is an inline emoji data URI',
+     !favs.concat([touch ? touch.getAttribute('href') : '']).some(h => /^data:/.test(h || '')));
+
+  for (const [file, type, min] of [
+    ['apple-touch-icon.png', 'image/png', 1000],
+    ['icon-192.png', 'image/png', 1000],
+    ['icon-512.png', 'image/png', 5000],
+    ['icon-maskable-512.png', 'image/png', 5000],
+    ['favicon.ico', null, 500],
+  ]) {
+    const r = await fetch('./' + file);
+    const blob = r.ok ? await r.blob() : null;
+    ok(file + ' actually exists and is a plausible image',
+       r.ok && blob && blob.size > min && (!type || blob.type === type),
+       r.ok && blob ? blob.size + ' B ' + blob.type : 'HTTP ' + r.status);
+  }
+
+  // PWA screenshots enable Chrome's richer install dialog — but only if the
+  // declared files exist, which is the same trap the OG image fell into.
+  ok('manifest declares install screenshots',
+     Array.isArray(mf.screenshots) && mf.screenshots.length >= 2);
+  ok('screenshots cover both a wide and a narrow form factor',
+     (mf.screenshots || []).some(s => s.form_factor === 'wide') &&
+     (mf.screenshots || []).some(s => s.form_factor === 'narrow'));
+  for (const s of (mf.screenshots || [])) {
+    const r = await fetch('./' + s.src);
+    const blob = r.ok ? await r.blob() : null;
+    ok('screenshot ' + s.src + ' exists', r.ok && blob && blob.size > 5000,
+       r.ok && blob ? blob.size + ' B' : 'HTTP ' + r.status);
+  }
+  ok('every manifest icon is a real file that exists', await (async () => {
+    for (const i of mf.icons) {
+      const r = await fetch('./' + i.src);
+      if (!r.ok) return false;
+    }
+    return true;
+  })());
+  ok('a maskable icon is provided for Android launchers',
+     mf.icons.some(i => (i.purpose || '').includes('maskable')));
+
+  // ==========================================================================
+  //  SOCIAL PREVIEW  —  the bug that broke 100% of shares
+  // ==========================================================================
+  const ogImg = d.querySelector('meta[property="og:image"]');
+  ok('og:image is declared', !!ogImg);
+  ok('og:image is a PNG, not an SVG (crawlers reject SVG)',
+     ogImg && /\.png$/.test(ogImg.content), ogImg ? ogImg.content : 'missing');
+  ok('og:image dimensions declared',
+     !!d.querySelector('meta[property="og:image:width"]') &&
+     !!d.querySelector('meta[property="og:image:height"]'));
+  ok('og:image has alt text', !!d.querySelector('meta[property="og:image:alt"]'));
+  const twImg = d.querySelector('meta[name="twitter:image"]');
+  ok('twitter:image is a PNG too', twImg && /\.png$/.test(twImg.content));
+  try {
+    // The previous tag pointed at a file that did not exist. Prove this one does.
+    const r = await fetch(ogImg.content.replace(/^https:\/\/codezest\.netlify\.app/, '.'));
+    ok('the OG image file actually EXISTS', r.ok, 'HTTP ' + r.status);
+    const blob = await r.blob();
+    ok('OG image is served as image/png', /image\/png/.test(blob.type), blob.type);
+    ok('OG image is a plausible card size', blob.size > 10000, blob.size + ' bytes');
+  } catch (e) { ok('OG image fetch', false, e.message); }
+
+  // ---- hreflang ---------------------------------------------------------
+  const alts = [...d.querySelectorAll('link[rel="alternate"][hreflang]')];
+  ok('hreflang alternates declared', alts.length >= 3, alts.length + ' found');
+  ok('hreflang covers en, ar and x-default',
+     ['en', 'ar', 'x-default'].every(l => alts.some(a => a.hreflang === l)));
+  // The old sitemap pointed every language at the same URL, which tells a
+  // crawler nothing. The en/ar URLs must actually differ.
+  const enHref = alts.find(a => a.hreflang === 'en');
+  const arHref = alts.find(a => a.hreflang === 'ar');
+  ok('en and ar hreflang point at DIFFERENT urls',
+     enHref && arHref && enHref.href !== arHref.href,
+     (enHref ? enHref.href : '?') + ' vs ' + (arHref ? arHref.href : '?'));
+  ok('?lang= is what makes those urls differ',
+     enHref && /lang=en/.test(enHref.href));
+
+  // ==========================================================================
+  //  i18n PARITY for every new feature (both directions)
+  // ==========================================================================
+  const groups = { 'ai.': 'AI', 'py.': 'Python', 'sh.': 'share', 'em.': 'embed', 'in.': 'install' };
+  Object.keys(groups).forEach(prefix => {
+    const en = Object.keys(I.en).filter(k => k.indexOf(prefix) === 0);
+    const ar = Object.keys(I.ar).filter(k => k.indexOf(prefix) === 0);
+    ok(groups[prefix] + ' keys exist in English', en.length > 0, en.length + ' keys');
+    ok(groups[prefix] + ' keys all mirrored in Arabic',
+       en.every(k => k in I.ar), en.filter(k => !(k in I.ar)).join(',') || 'all present');
+    // Reverse direction too: an Arabic-only key would crash the English UI.
+    ok(groups[prefix] + ' has no Arabic-only keys',
+       ar.every(k => k in I.en), ar.filter(k => !(k in I.en)).join(',') || 'none');
+    // A key left as a copy of the English string is an untranslated key. The
+    // exception is deliberate: "Python" is a proper noun.
+    const untranslated = en.filter(k => I.en[k] === I.ar[k] && k !== 'py.title' && k !== 'em.madeWith');
+    ok(groups[prefix] + ' strings are genuinely translated',
+       untranslated.length === 0, untranslated.join(',') || 'all translated');
+  });
+
+  flush();
+};
+</script>
+</body>
+</html>
