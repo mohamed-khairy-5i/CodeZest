@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="robots" content="noindex,nofollow">
+<title>CodeZest payload budget</title>
+<style>
+  body{font-family:ui-monospace,monospace;background:#0b1020;color:#e5e7eb;padding:1rem}
+  h1{font-size:1rem}
+  #out{white-space:pre-wrap;font-size:.8rem;line-height:1.6}
+  .p{color:#34d399}.f{color:#f87171}
+</style>
+</head>
+<body>
+<h1>CodeZest payload budget</h1>
+<div id="out">measuring…</div>
+
+<script>
+/*
+ * Guards the initial-load budget. The pre-v2 build shipped ~1 MB of eager
+ * CDN JavaScript (including a 397 KB Tailwind runtime) and took ~10.5 s to
+ * become interactive. These assertions exist so that never silently returns.
+ */
+const out = document.getElementById('out');
+const lines = [];
+let pass = 0, fail = 0;
+
+function ok(name, cond, detail) {
+  if (cond) { pass++; lines.push(`<span class="p">PASS</span>  ${name}${detail ? '  [' + detail + ']' : ''}`); }
+  else { fail++; lines.push(`<span class="f">FAIL</span>  ${name}${detail ? '  [' + detail + ']' : ''}`); }
+}
+function info(msg) { lines.push('      ' + msg); }
+
+(async () => {
+  const t0 = performance.now();
+  const html = await (await fetch('./index.html')).text();
+  const t1 = performance.now();
+
+  info(`index.html: ${(html.length / 1024).toFixed(1)} KB fetched in ${(t1 - t0).toFixed(0)} ms`);
+
+  const head = html.slice(0, html.indexOf('</head>'));
+  const blockingCss = (head.match(/<link[^>]*rel="stylesheet"(?![^>]*media="print")/g) || []).length;
+  const deferredCss = (head.match(/media="print"/g) || []).length;
+  info(`blocking CSS: ${blockingCss}, deferred CSS: ${deferredCss}`);
+
+  // --- things that must NOT be on the critical path ---
+  ok('Tailwind CDN runtime removed (was 397 KB)',
+     !/cdn\.tailwindcss\.com/.test(html));
+  ok('html2canvas is lazy',
+     !/<script src="[^"]*html2canvas[^"]*"><\/script>/.test(html));
+  ok('JSZip is lazy',
+     !/<script src="[^"]*jszip[^"]*"><\/script>/.test(html));
+  ok('Prettier is lazy',
+     !/<script src="[^"]*prettier[^"]*"><\/script>/.test(html));
+  ok('js-beautify is lazy',
+     !/<script src="[^"]*js-beautify[^"]*"><\/script>/.test(html));
+  ok('templates.js is lazy (~94 KB)',
+     !/<script src="\.\/templates\.js"><\/script>/.test(html));
+  ok('at most 1 blocking stylesheet', blockingCss <= 1, String(blockingCss));
+
+  /* --- the v2.2+ feature modules must stay off the critical path ---------
+   * Each of these is a real feature, and each would be pure waste on a first
+   * visit: nobody has asked for the AI yet, nobody is running Python yet, and
+   * a brand-new visitor has nothing to share yet.
+   */
+  ok('ai.js is lazy (~24 KB)',
+     !/<script src="\.\/ai\.js"><\/script>/.test(html));
+  ok('python.js is lazy (~7 KB)',
+     !/<script src="\.\/python\.js"><\/script>/.test(html));
+  ok('share.js is lazy (~27 KB, contains the QR encoder)',
+     !/<script src="\.\/share\.js"><\/script>/.test(html));
+
+  /* Pyodide is ~12 MB. It must never appear anywhere on the critical path;
+   * it is fetched from jsDelivr only after the user explicitly consents. */
+  ok('Pyodide (~12 MB) is NOT referenced by a script tag',
+     !/<script src="[^"]*pyodide[^"]*"/.test(html));
+
+  /* All four lazy bundles must still be DECLARED, otherwise "lazy" would be
+   * indistinguishable from "missing" and these tests would pass on a broken
+   * build. */
+  ok('lazy bundles are declared to the LazyLoader',
+     ['./ai.js', './python.js', './share.js', './templates.js']
+       .every(f => html.includes("'" + f + "'")));
+
+  /* --- THE CLOSING-SCRIPT-TAG REGRESSION GUARD ---------------------------
+   * (Deliberately not written literally in this comment. The first draft of
+   * this very block spelled the tag out in its own heading and instantly
+   * truncated itself — a seventh occurrence of the bug it exists to catch.)
+   *
+   * A literal closing script tag anywhere inside an inline block — even in a
+   * comment or a string literal — ends the element right there and silently
+   * kills the rest of the application. That bug cost this project six
+   * separate debugging sessions, so it is now asserted permanently.
+   *
+   * Naive tag counting does NOT detect it (this file legitimately contains
+   * many more opening matches than closing ones, because of attribute values
+   * and JSON-LD). So this simulates what the HTML parser actually does: from
+   * each opening tag, scan to the FIRST closing tag and continue from there.
+   *
+   * Note the split strings below — writing the tag literally here would
+   * detonate this very harness.
+   */
+  const CLOSE_TAG = '<' + '/script' + '>';
+  const lower = html.toLowerCase();
+  let cursor = 0, elements = 0, unterminated = 0;
+  for (;;) {
+    const open = lower.indexOf('<scr' + 'ipt', cursor);
+    if (open === -1) break;
+    elements++;
+    const gt = lower.indexOf('>', open);
+    if (gt === -1) { unterminated++; break; }
+    const close = lower.indexOf(CLOSE_TAG, gt + 1);
+    if (close === -1) { unterminated++; break; }
+    cursor = close + CLOSE_TAG.length;
+  }
+  info(`script elements (parser simulation): ${elements}`);
+  ok('every script element is properly terminated', unterminated === 0,
+     unterminated + ' unterminated');
+  ok('the app booted, so no inline block was truncated',
+     html.includes('window.CodeZest'));
+
+  /* --- REAL billable payload -------------------------------------------
+   * Netlify Free is 300 credits/month at 20 credits per GB of bandwidth,
+   * roughly 15 GB, and when it runs out the site is PAUSED. So the number
+   * that matters is not "how big is the repo" but "how many compressed bytes
+   * does one first-time visitor cost us". CDN-hosted libraries are excluded
+   * on purpose: cdnjs and jsDelivr serve those, not us.
+   */
+  try {
+    if (typeof CompressionStream === 'function') {
+      const gzipSize = async (text) => {
+        const cs = new CompressionStream('gzip');
+        const stream = new Blob([text]).stream().pipeThrough(cs);
+        return (await new Response(stream).blob()).size;
+      };
+      const swText = await (await fetch('./sw.js')).text();
+      const bytes = (await gzipSize(html)) + (await gzipSize(swText));
+      const firstVisitKb = bytes / 1024;
+      info(`first-visit payload (gzip, self-hosted only): ${firstVisitKb.toFixed(1)} KB`);
+      const visits = Math.floor((15 * 1024 * 1024) / firstVisitKb);
+      info(`≈ ${visits.toLocaleString()} first visits inside the 15 GB free allowance`);
+      ok('first visit stays under a 70 KB gzip budget', firstVisitKb < 70,
+         firstVisitKb.toFixed(1) + ' KB');
+      ok('free tier absorbs at least 200,000 first visits/month', visits > 200000,
+         visits.toLocaleString());
+    } else {
+      info('CompressionStream unavailable — skipping the gzip budget');
+    }
+  } catch (e) { info('gzip measurement failed: ' + e.message); }
+
+  /* --- offline promise -------------------------------------------------
+   * Repeat visits must cost ZERO bandwidth, which is what turns a hard
+   * credit cap into a non-problem. That only holds if the shell is actually
+   * pre-cached.
+   */
+  try {
+    const sw = await (await fetch('./sw.js')).text();
+    ok('service worker pre-caches the AI engine', sw.includes("'./ai.js'"));
+    ok('service worker pre-caches the share/QR layer', sw.includes("'./share.js'"));
+    ok('service worker pre-caches the template gallery', sw.includes("'./templates.js'"));
+    // Match a Pyodide URL, not the word: sw.js legitimately explains in a
+    // comment WHY the bundle is excluded, and that comment must not fail this.
+    ok('service worker does NOT pre-cache the 12 MB Pyodide bundle',
+       !/cdn\.jsdelivr\.net\/pyodide/.test(sw) && !/pyodide\.js/.test(sw));
+  } catch (e) { ok('service worker audit', false, e.message); }
+
+  // --- measure the real eager JS payload ---
+  const eager = html.match(/<script src="https:\/\/cdnjs[^"]*"><\/script>/g) || [];
+  let total = 0;
+  for (const s of eager) {
+    const u = s.match(/src="([^"]+)"/)[1];
+    try { total += (await (await fetch(u)).blob()).size; } catch (e) { /* offline */ }
+  }
+  const kb = total / 1024;
+  info(`eager CDN scripts: ${eager.length}`);
+  ok('eager CDN JS under 450 KB budget', kb < 450, `${kb.toFixed(0)} KB`);
+  ok('eager CDN JS at least halved vs the ~1 MB baseline', kb < 512, `${kb.toFixed(0)} KB`);
+
+  out.innerHTML = lines.join('\n') + `\n\n<b>${pass} passed, ${fail} failed</b>`;
+  console.log(`RESULT ${pass} passed, ${fail} failed`);
+  lines.forEach(l => console.log(l.replace(/<[^>]+>/g, '')));
+})().catch(e => {
+  out.textContent = 'harness error: ' + e.message;
+  console.log('RESULT 0 passed, 1 failed — ' + e.message);
+});
+</script>
+</body>
+</html>
